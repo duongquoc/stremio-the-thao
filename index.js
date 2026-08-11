@@ -2,19 +2,18 @@ const { addonBuilder, serveHTTP } = require("stremio-addon-sdk");
 const axios = require("axios");
 const NodeCache = require("node-cache");
 
-// Cache 20 phút để đảm bảo các luồng m3u8 live luôn tươi mới
-const appCache = new NodeCache({ stdTTL: 1200, checkperiod: 300 });
+// Giảm Cache xuống 10 phút (600s) để link bóng đá Xôi Lạc cập nhật token liên tục
+const appCache = new NodeCache({ stdTTL: 600, checkperiod: 300 });
 
 const AXIOS_CONFIG = {
   headers: {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "*/*"
   },
-  // Ép thời gian chờ xuống 4 giây để fail-fast, không làm treo hệ thống
-  timeout: 4000 
+  timeout: 4000 // Tải đa luồng siêu tốc, đá văng ngay nếu nguồn nào bị chết
 };
 
-// TỔNG HỢP TOÀN BỘ NGUỒN M3U TỪ ẢNH MỚI
+// FULL 14 NGUỒN M3U: Kênh TV + Giải Trí + Trực tiếp Bóng Đá Xôi Lạc
 const SPORTS_M3U_URLS = [
   "https://1.org.vn/vmttv",               
   "https://tinyurl.com/vietxiaomi",       
@@ -23,10 +22,16 @@ const SPORTS_M3U_URLS = [
   "https://tinhlagi.pro/s.m3u",           
   "https://bit.ly/quidntv",               
   "http://bit.ly/coocaa-tv",              
-  "https://livesport.s.gy/easport"        
+  "https://livesport.s.gy/easport",
+  "https://tt.8share.pro/chuoichien",     
+  "https://tt.8share.pro/buncha",         
+  "https://tt.8share.pro/khandaia",       
+  "https://tt.8share.pro/gavang",         
+  "https://tt.8share.pro/hoiquan",        
+  "https://tt.8share.pro/hoadao"          
 ];
 
-// BẢNG LOGO HD CHUẨN
+// BẢNG SỬA LOGO HD CHUẨN
 const FIX_LOGOS = {
   "vtv1": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d3/VTV1_hd_2023.png/320px-VTV1_hd_2023.png",
   "vtv2": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/9f/VTV2_hd_2023.png/320px-VTV2_hd_2023.png",
@@ -48,40 +53,41 @@ function getSmartLogo(channelName, originalLogo) {
       return FIX_LOGOS[key];
     }
   }
+  // Mặc định ảnh bóng đá nếu không tìm thấy logo
   return (originalLogo && originalLogo.startsWith("http")) ? originalLogo : "https://i.imgur.com/26X3bY4.png";
 }
 
 const manifest = {
   id: "org.thethao.livehd",
-  version: "2.3.0",
+  version: "3.0.0",
   name: "Kênh Thể Thao & Truyền Hình Live HD",
-  description: "Tải siêu tốc song song 8 luồng M3U, chống treo Stremio",
+  description: "Cập nhật kho 14 nguồn M3U. Phân loại chuẩn Bóng đá trực tiếp & Kênh TV.",
   resources: ["catalog", "meta", "stream"],
   types: ["tv"],
   idPrefixes: ["sport:"],
   catalogs: [
     {
       type: "tv",
+      id: "live_match",
+      name: "⚽ Trực Tiếp Bóng Đá", // Gom riêng trận đấu, xôi lạc
+      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
+    },
+    {
+      type: "tv",
       id: "sport_vn",
-      name: "Bóng Đá VN & TV360+",
+      name: "📺 Kênh TV (VTV, K+, TV360)", // Trả lại sự trong sạch cho kênh truyền thống
       extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
     },
     {
       type: "tv",
       id: "sport_int",
-      name: "Thể Thao Quốc Tế",
+      name: "🌍 Thể Thao Quốc Tế",
       extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
     },
     {
       type: "tv",
       id: "tv_entertainment",
-      name: "Phim & Giải Trí (HBO, 4K, Cartoon)",
-      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
-    },
-    {
-      type: "tv",
-      id: "sport_all",
-      name: "Tất Cả Kênh Truyền Hình",
+      name: "🎬 Phim & Giải Trí (4K, HBO)",
       extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
     }
   ]
@@ -90,22 +96,19 @@ const manifest = {
 const builder = new addonBuilder(manifest);
 
 async function fetchSportsChannels() {
-  const cacheKey = "all_sports_channels_grouped_v23";
+  const cacheKey = "all_sports_channels_grouped_v300";
   if (appCache.has(cacheKey)) return appCache.get(cacheKey);
 
   const channelsMap = new Map();
   const seenUrls = new Set();
 
-  // [THUẬT TOÁN MỚI] Bắn 8 request cùng 1 lúc (Parallel), bỏ qua ngay nếu lỗi/chậm
+  // Bắn đồng loạt 14 request cùng 1 lúc
   const requests = SPORTS_M3U_URLS.map(url =>
     axios.get(url, AXIOS_CONFIG).catch(() => null)
   );
-
-  // Chờ tất cả phản hồi (tối đa mất 4 giây cho dù link hỏng)
   const responses = await Promise.all(requests);
 
   for (const res of responses) {
-    // Nếu kết quả trả về null hoặc không phải chuỗi M3U thì bỏ qua
     if (!res || !res.data || typeof res.data !== "string") continue;
 
     const lines = res.data.split("\n");
@@ -121,7 +124,7 @@ async function fetchSportsChannels() {
         currentExt = {
           name: nameMatch ? nameMatch[1].trim() : "Kênh Live",
           logo: logoMatch ? logoMatch[1] : null,
-          group: groupMatch ? groupMatch[1] : "TV"
+          group: groupMatch ? groupMatch[1] : ""
         };
       } else if (line.startsWith("http") && currentExt) {
         const streamUrl = line;
@@ -151,12 +154,12 @@ async function fetchSportsChannels() {
 
   const channels = Array.from(channelsMap.values());
   if (channels.length > 0) {
-    appCache.set(cacheKey, channels, 1200);
+    appCache.set(cacheKey, channels, 600);
   }
   return channels;
 }
 
-// 1. CATALOG HANDLER
+// 1. CATALOG HANDLER (Logic phân loại thông minh)
 builder.defineCatalogHandler(async (args) => {
   const allChannels = await fetchSportsChannels();
   let filteredChannels = [];
@@ -165,10 +168,17 @@ builder.defineCatalogHandler(async (args) => {
     const query = args.extra.search.toLowerCase();
     filteredChannels = allChannels.filter(ch => ch.name.toLowerCase().includes(query));
   } else {
-    if (args.id === "sport_vn") {
+    if (args.id === "live_match") {
+      // Bắt các trận đá live (chứa chữ 'vs', 'xoilac', 'vòng', 'ngoại hạng', 'cúp')
       filteredChannels = allChannels.filter(ch => 
-        /tv360|on sport|k\+|vtvcab|sctv17|vtv|bóng đá|thể thao/i.test(ch.name) ||
-        /tv360|vietnam|trong nuoc/i.test(ch.group)
+        / vs |trực tiếp|live|xoilac|ngoại hạng|cúp|cup|đá/i.test(ch.name) ||
+        /bóng đá|trực tiếp|live match/i.test(ch.group)
+      );
+    } else if (args.id === "sport_vn") {
+      // Lọc kênh truyền hình VN (Ép bỏ các kênh có chữ 'vs' hoặc 'xoilac' để không lẫn trận đấu vào)
+      filteredChannels = allChannels.filter(ch => 
+        (!/ vs |xoilac/i.test(ch.name)) && 
+        (/tv360|on sport|k\+|vtvcab|sctv|vtv|htv|thể thao/i.test(ch.name) || /tv360|vietnam|trong nuoc/i.test(ch.group))
       );
     } else if (args.id === "sport_int") {
       filteredChannels = allChannels.filter(ch => 
@@ -177,7 +187,7 @@ builder.defineCatalogHandler(async (args) => {
       );
     } else if (args.id === "tv_entertainment") {
       filteredChannels = allChannels.filter(ch => 
-        /hbo|cinemax|cartoon|animal|4k|coocaa|hit|discovery|axn|warner/i.test(ch.name) ||
+        /hbo|cinemax|cartoon|animal|4k|coocaa|hit|discovery|axn|warner|phim/i.test(ch.name) ||
         /phim|movie|cinema|4k|entertainment/i.test(ch.group)
       );
     } else {
@@ -194,7 +204,7 @@ builder.defineCatalogHandler(async (args) => {
     name: ch.name,
     poster: ch.logo,
     background: ch.logo,
-    description: `📺 Trực Tiếp: ${ch.name}\nTổng số máy chủ: ${ch.streams.length} nguồn phát.`
+    description: `📺 ${ch.name}\n⚡ Có ${ch.streams.length} Server dự phòng. Nếu lag hãy chọn Server khác.`
   }));
 
   return { metas: metas };
@@ -214,7 +224,7 @@ builder.defineMetaHandler(async (args) => {
           name: target.name,
           poster: target.logo,
           background: target.logo,
-          description: `🔴 Đang phát trực tiếp: ${target.name}\n\nKênh này hiện có ${target.streams.length} nguồn phát (server) dự phòng. Hãy chuyển server nếu bị nghẽn.`
+          description: `🔴 Đang phát: ${target.name}\n\nKênh này hiện có ${target.streams.length} nguồn phát dự phòng. Bạn vui lòng chuyển Server mượt nhất ở danh sách bên cạnh để xem.`
         }
       };
     }
@@ -231,7 +241,7 @@ builder.defineStreamHandler(async (args) => {
     if (target && target.streams.length > 0) {
       const streams = target.streams.map((url, index) => ({
         name: `Server ${index + 1}`,
-        title: `Nguồn phát ${index + 1} - ${target.name}\n▶ Bấm để xem`,
+        title: `Nguồn ${index + 1} - ${target.name}\n▶ Bấm để xem`,
         url: url
       }));
 
@@ -253,5 +263,5 @@ if (RENDER_URL) {
 
 const PORT = process.env.PORT || 7002;
 serveHTTP(builder.getInterface(), { port: PORT }).then(({ url }) => {
-  console.log(`Addon Thể Thao & TV v2.3.0 đang chạy tại: ${url}manifest.json`);
+  console.log(`Addon Thể Thao v3.0.0 đang chạy tại: ${url}manifest.json`);
 });
