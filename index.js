@@ -2,6 +2,7 @@ const { addonBuilder, serveHTTP } = require("stremio-addon-sdk");
 const axios = require("axios");
 const NodeCache = require("node-cache");
 
+// Cache 20 phút để đảm bảo luồng m3u8 thể thao luôn mới
 const appCache = new NodeCache({ stdTTL: 1200, checkperiod: 300 });
 
 const AXIOS_CONFIG = {
@@ -12,17 +13,42 @@ const AXIOS_CONFIG = {
   timeout: 8000
 };
 
+// TỔNG HỢP CÁC NGUỒN M3U CHUYÊN THỂ THAO & BÓNG ĐÁ
 const SPORTS_M3U_URLS = [
   "https://tinyurl.com/vmt47",        // Thể thao, Bóng đá, TV360+ độc quyền
   "https://tinhlagi.pro/s.m3u",       // Bóng đá, Tiếu Lâm & nguồn tổng hợp
   "https://livesport.s.gy/easport"    // Các kênh thể thao quốc tế
 ];
 
+// BẢNG LOGO HD CHUẨN CHO CÁC KÊNH VTV & TRUYỀN HÌNH
+const FIX_LOGOS = {
+  "vtv1": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d3/VTV1_hd_2023.png/320px-VTV1_hd_2023.png",
+  "vtv2": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/9f/VTV2_hd_2023.png/320px-VTV2_hd_2023.png",
+  "vtv3": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f6/VTV3_hd_2023.png/320px-VTV3_hd_2023.png",
+  "vtv4": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/07/VTV4_hd_2023.png/320px-VTV4_hd_2023.png",
+  "vtv5": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/18/VTV5_hd_2023.png/320px-VTV5_hd_2023.png",
+  "vtv6": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/b3/VTV6_HD_Logo.png/320px-VTV6_HD_Logo.png",
+  "vtv7": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/15/VTV7_hd_2023.png/320px-VTV7_hd_2023.png",
+  "vtv8": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8d/VTV8_hd_2023.png/320px-VTV8_hd_2023.png",
+  "vtv9": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e6/VTV9_hd_2023.png/320px-VTV9_hd_2023.png"
+};
+
+// HÀM TỰ ĐỘNG GÁN LOGO CHUẨN NẾU NGUỒN BỊ HỎNG HOẶC THIẾU
+function getSmartLogo(channelName, originalLogo) {
+  const cleanName = channelName.toLowerCase().replace(/[^a-z0-9]/g, "");
+  for (const key in FIX_LOGOS) {
+    if (cleanName.includes(key)) {
+      return FIX_LOGOS[key];
+    }
+  }
+  return (originalLogo && originalLogo.startsWith("http")) ? originalLogo : "https://i.imgur.com/26X3bY4.png";
+}
+
 const manifest = {
   id: "org.thethao.livehd",
-  version: "2.0.0",
+  version: "2.1.0",
   name: "Kênh Thể Thao & Bóng Đá Live HD",
-  description: "Tối ưu gom Server: 1 Kênh - Đa luồng phát dự phòng",
+  description: "Tối ưu gom Server: 1 Kênh - Đa luồng phát dự phòng & Sửa Logo VTV HD",
   resources: ["catalog", "meta", "stream"],
   types: ["tv"],
   idPrefixes: ["sport:"],
@@ -50,8 +76,9 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
+// TẢI, GIẢI MÃ M3U, GỘP SERVER DỰ PHÒNG & TỰ ĐỘNG SỬA LOGO
 async function fetchSportsChannels() {
-  const cacheKey = "all_sports_channels_grouped";
+  const cacheKey = "all_sports_channels_grouped_v21";
   if (appCache.has(cacheKey)) return appCache.get(cacheKey);
 
   const channelsMap = new Map();
@@ -92,7 +119,7 @@ async function fetchSportsChannels() {
               channelsMap.set(channelId, {
                 id: channelId,
                 name: currentExt.name,
-                logo: currentExt.logo || "https://i.imgur.com/26X3bY4.png",
+                logo: getSmartLogo(currentExt.name, currentExt.logo),
                 group: currentExt.group,
                 streams: [streamUrl]
               });
@@ -113,6 +140,7 @@ async function fetchSportsChannels() {
   return channels;
 }
 
+// 1. CATALOG HANDLER
 builder.defineCatalogHandler(async (args) => {
   const allChannels = await fetchSportsChannels();
   let filteredChannels = [];
@@ -151,6 +179,7 @@ builder.defineCatalogHandler(async (args) => {
   return { metas: metas };
 });
 
+// 2. META HANDLER
 builder.defineMetaHandler(async (args) => {
   if (args.id?.startsWith("sport:")) {
     const allChannels = await fetchSportsChannels();
@@ -172,6 +201,7 @@ builder.defineMetaHandler(async (args) => {
   return { meta: {} };
 });
 
+// 3. STREAM HANDLER
 builder.defineStreamHandler(async (args) => {
   if (args.id?.startsWith("sport:")) {
     const allChannels = await fetchSportsChannels();
@@ -190,7 +220,17 @@ builder.defineStreamHandler(async (args) => {
   return { streams: [] };
 });
 
+// TỰ ĐỘNG KEEP-ALIVE: Ping chính server mỗi 10 phút để Render không bị ngủ
+const RENDER_URL = process.env.RENDER_EXTERNAL_URL;
+if (RENDER_URL) {
+  setInterval(() => {
+    axios.get(`${RENDER_URL}/manifest.json`)
+      .then(() => console.log("[Keep-Alive] Tự động ping thành công!"))
+      .catch((err) => console.log("[Keep-Alive] Lỗi ping:", err.message));
+  }, 10 * 60 * 1000);
+}
+
 const PORT = process.env.PORT || 7002;
 serveHTTP(builder.getInterface(), { port: PORT }).then(({ url }) => {
-  console.log(`Addon Thể Thao Live HD (Bản Gộp Server) đang chạy tại: ${url}manifest.json`);
+  console.log(`Addon Thể Thao Live HD v2.1.0 đang chạy tại: ${url}manifest.json`);
 });
