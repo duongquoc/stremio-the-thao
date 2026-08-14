@@ -4,7 +4,7 @@ const NodeCache = require("node-cache");
 
 // Cache 20 phút (1200s), kiểm tra hết hạn mỗi 5 phút (300s)
 const appCache = new NodeCache({ stdTTL: 1200, checkperiod: 300 });
-const CACHE_KEY = "all_sports_channels_grouped_v23";
+const CACHE_KEY = "all_sports_channels_grouped_v24";
 
 const AXIOS_CONFIG = {
   headers: {
@@ -14,6 +14,7 @@ const AXIOS_CONFIG = {
   timeout: 4000 
 };
 
+// 8 đường link M3U gốc của bác
 const SPORTS_M3U_URLS = [
   "https://1.org.vn/vmttv",               
   "https://tinyurl.com/vietxiaomi",       
@@ -39,9 +40,14 @@ const FIX_LOGOS = {
   "cinemax": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/cc/Cinemax_2011_logo.svg/320px-Cinemax_2011_logo.svg.png"
 };
 
-// Đưa Regex ra ngoài để biên dịch 1 lần duy nhất, giảm tải CPU khi user lướt danh mục
+// ============ BỘ LỌC TỪ KHÓA (ĐÃ BỔ SUNG CÁC GIẢI ĐẤU) ============
+const RE_EPL = /ngoại hạng|premier league|epl|aston villa|arsenal|chelsea|liverpool|manchester|man city|man utd|tottenham/i;
+const RE_LALIGA = /la liga|laliga|tây ban nha|real madrid|barcelona|atletico/i;
+const RE_SERIEA = /serie a|italia|juventus|ac milan|inter milan/i;
+const RE_BUNDES = /bundesliga|đức|bayern|dortmund|leverkusen/i;
+
 const RE_VN = /tv360|on sport|k\+|vtvcab|sctv17|vtv|bóng đá|thể thao|vietnam|trong nuoc/i;
-const RE_INT = /bein|eurosport|arena|sky sport|espn|fox|nba|wwe|astro|supersport|laliga|premier|true premier|international|quoc te|foreign/i;
+const RE_INT = /bein|eurosport|arena|sky sport|espn|fox|nba|wwe|astro|supersport|international|quoc te/i;
 const RE_ENT = /hbo|cinemax|cartoon|animal|4k|coocaa|hit|discovery|axn|warner|phim|movie|cinema|entertainment/i;
 
 function getSmartLogo(channelName, originalLogo) {
@@ -52,19 +58,24 @@ function getSmartLogo(channelName, originalLogo) {
   return (originalLogo && originalLogo.startsWith("http")) ? originalLogo : "https://i.imgur.com/26X3bY4.png";
 }
 
+// ============ CẤU HÌNH DANH MỤC (MANIFEST) ============
 const manifest = {
-  id: "org.thethao.livehd",
-  version: "2.3.1",
+  id: "org.thethao.livehd.v24",
+  version: "2.4.0",
   name: "Kênh Thể Thao & Truyền Hình Live HD",
-  description: "Tải siêu tốc song song 8 luồng M3U, chống treo Stremio",
+  description: "Phân loại rõ ràng các giải đấu Bóng Đá & Kênh Truyền Hình",
   resources: ["catalog", "meta", "stream"],
   types: ["tv"],
   idPrefixes: ["sport:"],
   catalogs: [
-    { type: "tv", id: "sport_vn", name: "Bóng Đá VN & TV360+", extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
-    { type: "tv", id: "sport_int", name: "Thể Thao Quốc Tế", extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
-    { type: "tv", id: "tv_entertainment", name: "Phim & Giải Trí (HBO, 4K, Cartoon)", extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
-    { type: "tv", id: "sport_all", name: "Tất Cả Kênh Truyền Hình", extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] }
+    { type: "tv", id: "sport_epl", name: "🏴󠁧󠁢󠁥󠁮󠁧󠁿 Ngoại Hạng Anh", extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
+    { type: "tv", id: "sport_laliga", name: "🇪🇸 La Liga (Tây Ban Nha)", extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
+    { type: "tv", id: "sport_seriea", name: "🇮🇹 Serie A (Ý)", extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
+    { type: "tv", id: "sport_bundes", name: "🇩🇪 Bundesliga (Đức)", extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
+    { type: "tv", id: "sport_vn", name: "🇻🇳 Kênh Bóng Đá VN & TV360+", extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
+    { type: "tv", id: "sport_int", name: "🌍 Thể Thao Quốc Tế", extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
+    { type: "tv", id: "tv_entertainment", name: "🍿 Phim & Giải Trí", extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
+    { type: "tv", id: "sport_all", name: "📺 Tất Cả Kênh Truyền Hình", extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] }
   ]
 };
 
@@ -86,7 +97,6 @@ async function fetchSportsChannels() {
   for (const res of responses) {
     if (!res?.data || typeof res.data !== "string") continue;
 
-    // Tối ưu: Dùng /\r?\n/ để xử lý file M3U được tạo từ môi trường Windows
     const lines = res.data.split(/\r?\n/);
     let currentExt = null;
 
@@ -95,7 +105,6 @@ async function fetchSportsChannels() {
       if (!line) continue;
 
       if (line.startsWith("#EXTINF:")) {
-        // Tối ưu: Regex match chi tiết hơn và an toàn hơn
         const nameMatch = line.match(/,([^,]+)$/);
         const logoMatch = line.match(/tvg-logo="([^"]+)"/);
         const groupMatch = line.match(/group-title="([^"]+)"/);
@@ -119,7 +128,6 @@ async function fetchSportsChannels() {
             channelsMap.set(channelId, {
               id: channelId,
               name: currentExt.name,
-              // Gộp chuỗi tìm kiếm (search string) ngay từ lúc khởi tạo để tối ưu hàm filter ở Catalog
               searchString: `${currentExt.name} ${currentExt.group}`.toLowerCase(),
               logo: getSmartLogo(currentExt.name, currentExt.logo),
               group: currentExt.group,
@@ -134,14 +142,11 @@ async function fetchSportsChannels() {
 
   const channels = Array.from(channelsMap.values());
   
-  // Cơ chế Fallback: Chỉ lưu cache mới nếu fetch thành công ít nhất 1 kênh.
-  // Tránh trường hợp mất mạng / lỗi server nguồn ghi đè mảng rỗng lên cache đang chạy tốt.
   if (channels.length > 0) {
     appCache.set(CACHE_KEY, channels);
     return channels;
   }
   
-  // Trả về cache rỗng nếu mọi cách đều thất bại
   return [];
 }
 
@@ -154,8 +159,20 @@ builder.defineCatalogHandler(async (args) => {
     const query = args.extra.search.toLowerCase();
     filteredChannels = allChannels.filter(ch => ch.name.toLowerCase().includes(query));
   } else {
-    // Tối ưu: Chỉ test chuỗi gom (searchString) với Regex đã biên dịch sẵn
+    // Phân loại trận đấu/kênh theo từng danh mục
     switch (args.id) {
+      case "sport_epl":
+        filteredChannels = allChannels.filter(ch => RE_EPL.test(ch.searchString));
+        break;
+      case "sport_laliga":
+        filteredChannels = allChannels.filter(ch => RE_LALIGA.test(ch.searchString));
+        break;
+      case "sport_seriea":
+        filteredChannels = allChannels.filter(ch => RE_SERIEA.test(ch.searchString));
+        break;
+      case "sport_bundes":
+        filteredChannels = allChannels.filter(ch => RE_BUNDES.test(ch.searchString));
+        break;
       case "sport_vn":
         filteredChannels = allChannels.filter(ch => RE_VN.test(ch.searchString));
         break;
@@ -230,7 +247,6 @@ builder.defineStreamHandler(async (args) => {
 const RENDER_URL = process.env.RENDER_EXTERNAL_URL;
 if (RENDER_URL) {
   setInterval(() => {
-    // Tối ưu: Bổ sung timeout cho cronjob ping để không treo request ngầm
     axios.get(`${RENDER_URL}/manifest.json`, { timeout: 5000 })
       .then(() => console.log("[Keep-Alive] Ping thành công!"))
       .catch((err) => console.log("[Keep-Alive] Lỗi ping:", err.message));
@@ -239,5 +255,5 @@ if (RENDER_URL) {
 
 const PORT = process.env.PORT || 7002;
 serveHTTP(builder.getInterface(), { port: PORT }).then(({ url }) => {
-  console.log(`Addon Thể Thao & TV v2.3.1 đang chạy tại: ${url}manifest.json`);
+  console.log(`Addon Thể Thao & TV v2.4.0 đang chạy tại: ${url}manifest.json`);
 });
