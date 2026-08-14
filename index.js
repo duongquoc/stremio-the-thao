@@ -10,6 +10,7 @@ const AXIOS_CONFIG = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "*/*"
   },
+  // Ép thời gian chờ xuống 4 giây để fail-fast, không làm treo hệ thống
   timeout: 4000 
 };
 
@@ -53,7 +54,7 @@ function getSmartLogo(channelName, originalLogo) {
 // 1. CẬP NHẬT MANIFEST: TÁCH RIÊNG CÁC HÀNG GIẢI ĐẤU
 const manifest = {
   id: "org.thethao.livehd",
-  version: "2.4.0",
+  version: "2.4.1", // Đã fix lỗi lọc nhầm chữ "Nhạc"
   name: "Kênh Thể Thao & Truyền Hình Live HD",
   description: "Tải siêu tốc song song 8 luồng M3U, tách riêng các giải bóng đá",
   resources: ["catalog", "meta", "stream"],
@@ -108,7 +109,7 @@ const manifest = {
 const builder = new addonBuilder(manifest);
 
 async function fetchSportsChannels() {
-  const cacheKey = "all_sports_channels_grouped_v24";
+  const cacheKey = "all_sports_channels_grouped_v241";
   if (appCache.has(cacheKey)) return appCache.get(cacheKey);
 
   const channelsMap = new Map();
@@ -180,9 +181,13 @@ builder.defineCatalogHandler(async (args) => {
     const query = args.extra.search.toLowerCase();
     filteredChannels = allChannels.filter(ch => ch.name.toLowerCase().includes(query));
   } else {
-    // Lọc riêng Ngoại Hạng Anh
+    // Lọc riêng Ngoại Hạng Anh (Đã fix lỗi dính chữ "Nhạc")
     if (args.id === "sport_nha") {
-      filteredChannels = allChannels.filter(ch => /premier|nha\b|ngoại hạng|ngoai hang|epl/i.test(ch.name) || /nha\b|premier/i.test(ch.group));
+      filteredChannels = allChannels.filter(ch => 
+        /premier|ngoại hạng|ngoai hang|epl/i.test(ch.name) || 
+        /\bNHA\b/.test(ch.name) || 
+        /premier/i.test(ch.group)
+      );
     } 
     // Lọc riêng La Liga
     else if (args.id === "sport_laliga") {
@@ -196,19 +201,19 @@ builder.defineCatalogHandler(async (args) => {
     else if (args.id === "sport_vleague") {
       filteredChannels = allChannels.filter(ch => /v-league|vleague|v\.league/i.test(ch.name) || /v-league/i.test(ch.group));
     } 
-    // Các kênh thể thao VN & Quốc tế còn lại (Đã loại trừ các giải đã tách ở trên)
+    // Các kênh thể thao VN & Quốc tế còn lại 
     else if (args.id === "sport_vn") {
       filteredChannels = allChannels.filter(ch => 
         (/tv360|on sport|k\+|vtvcab|sctv17|vtv|bóng đá|thể thao|bein|eurosport|arena|sky sport|espn/i.test(ch.name) ||
         /tv360|vietnam|trong nuoc|international|quoc te/i.test(ch.group)) &&
-        !/premier|nha\b|ngoại hạng|ngoai hang|epl|la liga|laliga|c1\b|champions league|ucl|v-league|vleague/i.test(ch.name)
+        !(/premier|ngoại hạng|ngoai hang|epl|la liga|laliga|c1\b|champions league|ucl|v-league|vleague/i.test(ch.name) || /\bNHA\b/.test(ch.name))
       );
     } 
-    // Lọc phim & giải trí
+    // Lọc phim & giải trí (Gom luôn mấy kênh Ca Nhạc vào đây)
     else if (args.id === "tv_entertainment") {
       filteredChannels = allChannels.filter(ch => 
-        /hbo|cinemax|cartoon|animal|4k|coocaa|hit|discovery|axn|warner/i.test(ch.name) ||
-        /phim|movie|cinema|4k|entertainment/i.test(ch.group)
+        /hbo|cinemax|cartoon|animal|4k|coocaa|hit|discovery|axn|warner|nhạc|music/i.test(ch.name) ||
+        /phim|movie|cinema|4k|entertainment|nhạc|music/i.test(ch.group)
       );
     } 
     // Tất cả các kênh
@@ -232,7 +237,7 @@ builder.defineCatalogHandler(async (args) => {
   return { metas: metas };
 });
 
-// 3. META HANDLER (Giữ nguyên)
+// 3. META HANDLER
 builder.defineMetaHandler(async (args) => {
   if (args.id?.startsWith("sport:")) {
     const allChannels = await fetchSportsChannels();
@@ -254,7 +259,7 @@ builder.defineMetaHandler(async (args) => {
   return { meta: {} };
 });
 
-// 4. STREAM HANDLER (Giữ nguyên)
+// 4. STREAM HANDLER
 builder.defineStreamHandler(async (args) => {
   if (args.id?.startsWith("sport:")) {
     const allChannels = await fetchSportsChannels();
@@ -273,7 +278,7 @@ builder.defineStreamHandler(async (args) => {
   return { streams: [] };
 });
 
-// KEEP-ALIVE (Giữ nguyên)
+// KEEP-ALIVE
 const RENDER_URL = process.env.RENDER_EXTERNAL_URL;
 if (RENDER_URL) {
   setInterval(() => {
@@ -285,5 +290,5 @@ if (RENDER_URL) {
 
 const PORT = process.env.PORT || 7002;
 serveHTTP(builder.getInterface(), { port: PORT }).then(({ url }) => {
-  console.log(`Addon Thể Thao & TV v2.4.0 đang chạy tại: ${url}manifest.json`);
+  console.log(`Addon Thể Thao & TV v2.4.1 đang chạy tại: ${url}manifest.json`);
 });
