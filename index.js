@@ -2,19 +2,18 @@ const { addonBuilder, serveHTTP } = require("stremio-addon-sdk");
 const axios = require("axios");
 const NodeCache = require("node-cache");
 
-// Cache 20 phút để đảm bảo các luồng m3u8 live luôn tươi mới
+// Cache 20 phút (1200s), kiểm tra hết hạn mỗi 5 phút (300s)
 const appCache = new NodeCache({ stdTTL: 1200, checkperiod: 300 });
+const CACHE_KEY = "all_sports_channels_grouped_v23";
 
 const AXIOS_CONFIG = {
   headers: {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "*/*"
   },
-  // Ép thời gian chờ xuống 4 giây để fail-fast, không làm treo hệ thống
   timeout: 4000 
 };
 
-// TỔNG HỢP TOÀN BỘ NGUỒN M3U TỪ ẢNH MỚI
 const SPORTS_M3U_URLS = [
   "https://1.org.vn/vmttv",               
   "https://tinyurl.com/vietxiaomi",       
@@ -26,7 +25,6 @@ const SPORTS_M3U_URLS = [
   "https://livesport.s.gy/easport"        
 ];
 
-// BẢNG LOGO HD CHUẨN
 const FIX_LOGOS = {
   "vtv1": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d3/VTV1_hd_2023.png/320px-VTV1_hd_2023.png",
   "vtv2": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/9f/VTV2_hd_2023.png/320px-VTV2_hd_2023.png",
@@ -41,80 +39,64 @@ const FIX_LOGOS = {
   "cinemax": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/cc/Cinemax_2011_logo.svg/320px-Cinemax_2011_logo.svg.png"
 };
 
+// Đưa Regex ra ngoài để biên dịch 1 lần duy nhất, giảm tải CPU khi user lướt danh mục
+const RE_VN = /tv360|on sport|k\+|vtvcab|sctv17|vtv|bóng đá|thể thao|vietnam|trong nuoc/i;
+const RE_INT = /bein|eurosport|arena|sky sport|espn|fox|nba|wwe|astro|supersport|laliga|premier|true premier|international|quoc te|foreign/i;
+const RE_ENT = /hbo|cinemax|cartoon|animal|4k|coocaa|hit|discovery|axn|warner|phim|movie|cinema|entertainment/i;
+
 function getSmartLogo(channelName, originalLogo) {
   const cleanName = channelName.toLowerCase().replace(/[^a-z0-9]/g, "");
   for (const key in FIX_LOGOS) {
-    if (cleanName.includes(key)) {
-      return FIX_LOGOS[key];
-    }
+    if (cleanName.includes(key)) return FIX_LOGOS[key];
   }
   return (originalLogo && originalLogo.startsWith("http")) ? originalLogo : "https://i.imgur.com/26X3bY4.png";
 }
 
 const manifest = {
   id: "org.thethao.livehd",
-  version: "2.3.0",
+  version: "2.3.1",
   name: "Kênh Thể Thao & Truyền Hình Live HD",
   description: "Tải siêu tốc song song 8 luồng M3U, chống treo Stremio",
   resources: ["catalog", "meta", "stream"],
   types: ["tv"],
   idPrefixes: ["sport:"],
   catalogs: [
-    {
-      type: "tv",
-      id: "sport_vn",
-      name: "Bóng Đá VN & TV360+",
-      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
-    },
-    {
-      type: "tv",
-      id: "sport_int",
-      name: "Thể Thao Quốc Tế",
-      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
-    },
-    {
-      type: "tv",
-      id: "tv_entertainment",
-      name: "Phim & Giải Trí (HBO, 4K, Cartoon)",
-      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
-    },
-    {
-      type: "tv",
-      id: "sport_all",
-      name: "Tất Cả Kênh Truyền Hình",
-      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
-    }
+    { type: "tv", id: "sport_vn", name: "Bóng Đá VN & TV360+", extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
+    { type: "tv", id: "sport_int", name: "Thể Thao Quốc Tế", extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
+    { type: "tv", id: "tv_entertainment", name: "Phim & Giải Trí (HBO, 4K, Cartoon)", extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] },
+    { type: "tv", id: "sport_all", name: "Tất Cả Kênh Truyền Hình", extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }] }
   ]
 };
 
 const builder = new addonBuilder(manifest);
 
 async function fetchSportsChannels() {
-  const cacheKey = "all_sports_channels_grouped_v23";
-  if (appCache.has(cacheKey)) return appCache.get(cacheKey);
+  const cachedData = appCache.get(CACHE_KEY);
+  if (cachedData) return cachedData;
 
   const channelsMap = new Map();
   const seenUrls = new Set();
 
-  // [THUẬT TOÁN MỚI] Bắn 8 request cùng 1 lúc (Parallel), bỏ qua ngay nếu lỗi/chậm
   const requests = SPORTS_M3U_URLS.map(url =>
     axios.get(url, AXIOS_CONFIG).catch(() => null)
   );
 
-  // Chờ tất cả phản hồi (tối đa mất 4 giây cho dù link hỏng)
   const responses = await Promise.all(requests);
 
   for (const res of responses) {
-    // Nếu kết quả trả về null hoặc không phải chuỗi M3U thì bỏ qua
-    if (!res || !res.data || typeof res.data !== "string") continue;
+    if (!res?.data || typeof res.data !== "string") continue;
 
-    const lines = res.data.split("\n");
+    // Tối ưu: Dùng /\r?\n/ để xử lý file M3U được tạo từ môi trường Windows
+    const lines = res.data.split(/\r?\n/);
     let currentExt = null;
 
     for (let line of lines) {
       line = line.trim();
+      if (!line) continue;
+
       if (line.startsWith("#EXTINF:")) {
-        const nameMatch = line.match(/,(.+)$/);
+        // Tối ưu: Regex match chi tiết hơn và an toàn hơn
+        const nameMatch = line.match(/,([^,]+)$/);
         const logoMatch = line.match(/tvg-logo="([^"]+)"/);
         const groupMatch = line.match(/group-title="([^"]+)"/);
 
@@ -124,23 +106,24 @@ async function fetchSportsChannels() {
           group: groupMatch ? groupMatch[1] : "TV"
         };
       } else if (line.startsWith("http") && currentExt) {
-        const streamUrl = line;
-        
-        if (!seenUrls.has(streamUrl)) {
-          seenUrls.add(streamUrl);
+        if (!seenUrls.has(line)) {
+          seenUrls.add(line);
           
           const slug = currentExt.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
           const channelId = `sport:${slug}`;
 
-          if (channelsMap.has(channelId)) {
-            channelsMap.get(channelId).streams.push(streamUrl);
+          let channelData = channelsMap.get(channelId);
+          if (channelData) {
+            channelData.streams.push(line);
           } else {
             channelsMap.set(channelId, {
               id: channelId,
               name: currentExt.name,
+              // Gộp chuỗi tìm kiếm (search string) ngay từ lúc khởi tạo để tối ưu hàm filter ở Catalog
+              searchString: `${currentExt.name} ${currentExt.group}`.toLowerCase(),
               logo: getSmartLogo(currentExt.name, currentExt.logo),
               group: currentExt.group,
-              streams: [streamUrl]
+              streams: [line]
             });
           }
         }
@@ -150,10 +133,16 @@ async function fetchSportsChannels() {
   }
 
   const channels = Array.from(channelsMap.values());
+  
+  // Cơ chế Fallback: Chỉ lưu cache mới nếu fetch thành công ít nhất 1 kênh.
+  // Tránh trường hợp mất mạng / lỗi server nguồn ghi đè mảng rỗng lên cache đang chạy tốt.
   if (channels.length > 0) {
-    appCache.set(cacheKey, channels, 1200);
+    appCache.set(CACHE_KEY, channels);
+    return channels;
   }
-  return channels;
+  
+  // Trả về cache rỗng nếu mọi cách đều thất bại
+  return [];
 }
 
 // 1. CATALOG HANDLER
@@ -161,27 +150,23 @@ builder.defineCatalogHandler(async (args) => {
   const allChannels = await fetchSportsChannels();
   let filteredChannels = [];
 
-  if (args.extra && args.extra.search) {
+  if (args.extra?.search) {
     const query = args.extra.search.toLowerCase();
     filteredChannels = allChannels.filter(ch => ch.name.toLowerCase().includes(query));
   } else {
-    if (args.id === "sport_vn") {
-      filteredChannels = allChannels.filter(ch => 
-        /tv360|on sport|k\+|vtvcab|sctv17|vtv|bóng đá|thể thao/i.test(ch.name) ||
-        /tv360|vietnam|trong nuoc/i.test(ch.group)
-      );
-    } else if (args.id === "sport_int") {
-      filteredChannels = allChannels.filter(ch => 
-        /bein|eurosport|arena|sky sport|espn|fox|nba|wwe|astro|supersport|laliga|premier|true premier/i.test(ch.name) ||
-        /international|quoc te|foreign/i.test(ch.group)
-      );
-    } else if (args.id === "tv_entertainment") {
-      filteredChannels = allChannels.filter(ch => 
-        /hbo|cinemax|cartoon|animal|4k|coocaa|hit|discovery|axn|warner/i.test(ch.name) ||
-        /phim|movie|cinema|4k|entertainment/i.test(ch.group)
-      );
-    } else {
-      filteredChannels = allChannels;
+    // Tối ưu: Chỉ test chuỗi gom (searchString) với Regex đã biên dịch sẵn
+    switch (args.id) {
+      case "sport_vn":
+        filteredChannels = allChannels.filter(ch => RE_VN.test(ch.searchString));
+        break;
+      case "sport_int":
+        filteredChannels = allChannels.filter(ch => RE_INT.test(ch.searchString));
+        break;
+      case "tv_entertainment":
+        filteredChannels = allChannels.filter(ch => RE_ENT.test(ch.searchString));
+        break;
+      default:
+        filteredChannels = allChannels;
     }
   }
 
@@ -197,7 +182,7 @@ builder.defineCatalogHandler(async (args) => {
     description: `📺 Trực Tiếp: ${ch.name}\nTổng số máy chủ: ${ch.streams.length} nguồn phát.`
   }));
 
-  return { metas: metas };
+  return { metas };
 });
 
 // 2. META HANDLER
@@ -235,7 +220,7 @@ builder.defineStreamHandler(async (args) => {
         url: url
       }));
 
-      return { streams: streams };
+      return { streams };
     }
   }
   return { streams: [] };
@@ -245,7 +230,8 @@ builder.defineStreamHandler(async (args) => {
 const RENDER_URL = process.env.RENDER_EXTERNAL_URL;
 if (RENDER_URL) {
   setInterval(() => {
-    axios.get(`${RENDER_URL}/manifest.json`)
+    // Tối ưu: Bổ sung timeout cho cronjob ping để không treo request ngầm
+    axios.get(`${RENDER_URL}/manifest.json`, { timeout: 5000 })
       .then(() => console.log("[Keep-Alive] Ping thành công!"))
       .catch((err) => console.log("[Keep-Alive] Lỗi ping:", err.message));
   }, 10 * 60 * 1000);
@@ -253,5 +239,5 @@ if (RENDER_URL) {
 
 const PORT = process.env.PORT || 7002;
 serveHTTP(builder.getInterface(), { port: PORT }).then(({ url }) => {
-  console.log(`Addon Thể Thao & TV v2.3.0 đang chạy tại: ${url}manifest.json`);
+  console.log(`Addon Thể Thao & TV v2.3.1 đang chạy tại: ${url}manifest.json`);
 });
