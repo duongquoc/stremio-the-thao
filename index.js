@@ -51,44 +51,25 @@ function getSmartLogo(channelName, originalLogo) {
   return (originalLogo && originalLogo.startsWith("http")) ? originalLogo : "https://i.imgur.com/26X3bY4.png";
 }
 
-// 1. CẬP NHẬT MANIFEST: TÁCH RIÊNG CÁC HÀNG GIẢI ĐẤU
 const manifest = {
   id: "org.thethao.livehd",
-  version: "2.4.1", // Đã fix lỗi lọc nhầm chữ "Nhạc"
+  version: "2.3.0",
   name: "Kênh Thể Thao & Truyền Hình Live HD",
-  description: "Tải siêu tốc song song 8 luồng M3U, tách riêng các giải bóng đá",
+  description: "Tải siêu tốc song song 8 luồng M3U, chống treo Stremio",
   resources: ["catalog", "meta", "stream"],
   types: ["tv"],
   idPrefixes: ["sport:"],
   catalogs: [
     {
       type: "tv",
-      id: "sport_nha",
-      name: "⚽ Ngoại Hạng Anh",
-      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
-    },
-    {
-      type: "tv",
-      id: "sport_laliga",
-      name: "⚽ La Liga",
-      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
-    },
-    {
-      type: "tv",
-      id: "sport_c1",
-      name: "🏆 Champions League",
-      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
-    },
-    {
-      type: "tv",
-      id: "sport_vleague",
-      name: "🇻🇳 V-League",
-      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
-    },
-    {
-      type: "tv",
       id: "sport_vn",
-      name: "Bóng Đá VN & Kênh Thể Thao Khác",
+      name: "Bóng Đá VN & TV360+",
+      extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
+    },
+    {
+      type: "tv",
+      id: "sport_int",
+      name: "Thể Thao Quốc Tế",
       extra: [{ name: "search", isRequired: false }, { name: "skip", isRequired: false }]
     },
     {
@@ -109,19 +90,22 @@ const manifest = {
 const builder = new addonBuilder(manifest);
 
 async function fetchSportsChannels() {
-  const cacheKey = "all_sports_channels_grouped_v241";
+  const cacheKey = "all_sports_channels_grouped_v23";
   if (appCache.has(cacheKey)) return appCache.get(cacheKey);
 
   const channelsMap = new Map();
   const seenUrls = new Set();
 
+  // [THUẬT TOÁN MỚI] Bắn 8 request cùng 1 lúc (Parallel), bỏ qua ngay nếu lỗi/chậm
   const requests = SPORTS_M3U_URLS.map(url =>
     axios.get(url, AXIOS_CONFIG).catch(() => null)
   );
 
+  // Chờ tất cả phản hồi (tối đa mất 4 giây cho dù link hỏng)
   const responses = await Promise.all(requests);
 
   for (const res of responses) {
+    // Nếu kết quả trả về null hoặc không phải chuỗi M3U thì bỏ qua
     if (!res || !res.data || typeof res.data !== "string") continue;
 
     const lines = res.data.split("\n");
@@ -172,7 +156,7 @@ async function fetchSportsChannels() {
   return channels;
 }
 
-// 2. CẬP NHẬT LỌC CATALOG: PHÂN LOẠI KÊNH DỰA VÀO TÊN GIẢI ĐẤU
+// 1. CATALOG HANDLER
 builder.defineCatalogHandler(async (args) => {
   const allChannels = await fetchSportsChannels();
   let filteredChannels = [];
@@ -181,43 +165,22 @@ builder.defineCatalogHandler(async (args) => {
     const query = args.extra.search.toLowerCase();
     filteredChannels = allChannels.filter(ch => ch.name.toLowerCase().includes(query));
   } else {
-    // Lọc riêng Ngoại Hạng Anh (Đã fix lỗi dính chữ "Nhạc")
-    if (args.id === "sport_nha") {
+    if (args.id === "sport_vn") {
       filteredChannels = allChannels.filter(ch => 
-        /premier|ngoại hạng|ngoai hang|epl/i.test(ch.name) || 
-        /\bNHA\b/.test(ch.name) || 
-        /premier/i.test(ch.group)
+        /tv360|on sport|k\+|vtvcab|sctv17|vtv|bóng đá|thể thao/i.test(ch.name) ||
+        /tv360|vietnam|trong nuoc/i.test(ch.group)
       );
-    } 
-    // Lọc riêng La Liga
-    else if (args.id === "sport_laliga") {
-      filteredChannels = allChannels.filter(ch => /la liga|laliga/i.test(ch.name) || /la liga/i.test(ch.group));
-    } 
-    // Lọc riêng Champions League (C1)
-    else if (args.id === "sport_c1") {
-      filteredChannels = allChannels.filter(ch => /c1\b|champions league|ucl/i.test(ch.name) || /c1\b/i.test(ch.group));
-    } 
-    // Lọc riêng V-League
-    else if (args.id === "sport_vleague") {
-      filteredChannels = allChannels.filter(ch => /v-league|vleague|v\.league/i.test(ch.name) || /v-league/i.test(ch.group));
-    } 
-    // Các kênh thể thao VN & Quốc tế còn lại 
-    else if (args.id === "sport_vn") {
+    } else if (args.id === "sport_int") {
       filteredChannels = allChannels.filter(ch => 
-        (/tv360|on sport|k\+|vtvcab|sctv17|vtv|bóng đá|thể thao|bein|eurosport|arena|sky sport|espn/i.test(ch.name) ||
-        /tv360|vietnam|trong nuoc|international|quoc te/i.test(ch.group)) &&
-        !(/premier|ngoại hạng|ngoai hang|epl|la liga|laliga|c1\b|champions league|ucl|v-league|vleague/i.test(ch.name) || /\bNHA\b/.test(ch.name))
+        /bein|eurosport|arena|sky sport|espn|fox|nba|wwe|astro|supersport|laliga|premier|true premier/i.test(ch.name) ||
+        /international|quoc te|foreign/i.test(ch.group)
       );
-    } 
-    // Lọc phim & giải trí (Gom luôn mấy kênh Ca Nhạc vào đây)
-    else if (args.id === "tv_entertainment") {
+    } else if (args.id === "tv_entertainment") {
       filteredChannels = allChannels.filter(ch => 
-        /hbo|cinemax|cartoon|animal|4k|coocaa|hit|discovery|axn|warner|nhạc|music/i.test(ch.name) ||
-        /phim|movie|cinema|4k|entertainment|nhạc|music/i.test(ch.group)
+        /hbo|cinemax|cartoon|animal|4k|coocaa|hit|discovery|axn|warner/i.test(ch.name) ||
+        /phim|movie|cinema|4k|entertainment/i.test(ch.group)
       );
-    } 
-    // Tất cả các kênh
-    else {
+    } else {
       filteredChannels = allChannels;
     }
   }
@@ -237,7 +200,7 @@ builder.defineCatalogHandler(async (args) => {
   return { metas: metas };
 });
 
-// 3. META HANDLER
+// 2. META HANDLER
 builder.defineMetaHandler(async (args) => {
   if (args.id?.startsWith("sport:")) {
     const allChannels = await fetchSportsChannels();
@@ -259,7 +222,7 @@ builder.defineMetaHandler(async (args) => {
   return { meta: {} };
 });
 
-// 4. STREAM HANDLER
+// 3. STREAM HANDLER
 builder.defineStreamHandler(async (args) => {
   if (args.id?.startsWith("sport:")) {
     const allChannels = await fetchSportsChannels();
@@ -290,5 +253,5 @@ if (RENDER_URL) {
 
 const PORT = process.env.PORT || 7002;
 serveHTTP(builder.getInterface(), { port: PORT }).then(({ url }) => {
-  console.log(`Addon Thể Thao & TV v2.4.1 đang chạy tại: ${url}manifest.json`);
+  console.log(`Addon Thể Thao & TV v2.3.0 đang chạy tại: ${url}manifest.json`);
 });
